@@ -107,7 +107,6 @@ pack: $(TARGET_BIN) $(PAD_LOGO) $(HEADER_LOGO)
 	$(V)python3 $(PACK_CORE) \
 		--elf $(TARGET_ELF) --bin $(TARGET_BIN) \
 		--system name="Pokémon Mini",dirname=mini,pad_logo=$(PAD_LOGO),header_logo=$(HEADER_LOGO),ext=min,parse=rom \
-		--logo-invert \
 		--core-name "PokeMini" \
 		--version "$(CORE_VERSION)" \
 		--out $(PACKED_BIN)
