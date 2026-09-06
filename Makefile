@@ -1,27 +1,55 @@
-# Retro-Go SD template — one project = one CORE or one GWHB homebrew.
+# PokeMini — Pokémon Mini standalone dynamic core for Game & Watch Retro-Go SD.
 #
-#   make                  — build + pack (default: PROJECT_KIND=core)
-#   make PROJECT_KIND=homebrew
-#   make host             — Linux/macOS SDL binary (same src/main.c)
+#   make                  — build + pack → PokeMini.bin
+#   make host             — Linux/macOS SDL binary → PokeMini_host
 #   make host HOST_SDL=3  — same with SDL3
 #   make docker           — same build inside Docker (no host toolchain)
 #   make docker_shell     — interactive shell in the builder image
 #
-# Customize CORE_NAME / pack metadata below, then replace src/main.c.
 # Verbose compiler lines: make V=
 
 #######################################
 # Project identity
 #######################################
-# core     → pack_core.py     → /cores/<name>.bin
-# homebrew → pack_homebrew.py → /homebrews/<name>.bin
 PROJECT_KIND ?= core
 
-CORE_NAME  := example
+CORE_NAME  := PokeMini
 CORE_ENTRY := app_main
 
+CORE_PKMINI := src/pokemini
+
 CORE_C_SOURCES := \
-src/main.c
+$(CORE_PKMINI)/freebios/freebios.c \
+$(CORE_PKMINI)/source/CommandLine.c \
+$(CORE_PKMINI)/source/Hardware.c \
+$(CORE_PKMINI)/source/Joystick.c \
+$(CORE_PKMINI)/source/MinxAudio.c \
+$(CORE_PKMINI)/source/MinxColorPRC.c \
+$(CORE_PKMINI)/source/MinxCPU_CE.c \
+$(CORE_PKMINI)/source/MinxCPU_CF.c \
+$(CORE_PKMINI)/source/MinxCPU_SP.c \
+$(CORE_PKMINI)/source/MinxCPU_XX.c \
+$(CORE_PKMINI)/source/MinxCPU.c \
+$(CORE_PKMINI)/source/MinxIO.c \
+$(CORE_PKMINI)/source/MinxIRQ.c \
+$(CORE_PKMINI)/source/MinxLCD.c \
+$(CORE_PKMINI)/source/MinxPRC.c \
+$(CORE_PKMINI)/source/MinxTimers.c \
+$(CORE_PKMINI)/source/Multicart.c \
+$(CORE_PKMINI)/source/PMCommon.c \
+$(CORE_PKMINI)/source/PokeMini.c \
+$(CORE_PKMINI)/source/Video_x3.c \
+$(CORE_PKMINI)/source/Video.c \
+$(CORE_PKMINI)/resource/PokeMini_ColorPal.c \
+src/main.c \
+src/pkmini_i18n.c
+
+CORE_C_INCLUDES := \
+-I$(CORE_PKMINI)/source \
+-I$(CORE_PKMINI)/resource \
+-I$(CORE_PKMINI)/freebios \
+-I$(CORE_PKMINI)/include \
+-Isrc
 
 # Relative path so Docker bind-mounts work (do NOT use $(abspath) — it
 # bakes the host path into Make prerequisites / .d files). Do not name
@@ -30,32 +58,9 @@ GNW_CORE_SDK ?= sdk
 # Separate build trees so switching PROJECT_KIND does not reuse stale .o.
 BUILD_DIR ?= build/$(PROJECT_KIND)
 
-#######################################
-# SDK bridge overrides (optional)
-#######################################
-# The SDK bridge (gw_core_bridge.c) provides default implementations for
-# memcpy/memset/memmove/__aeabi_mem* and malloc/calloc/free/realloc.
-# Define these to exclude the SDK versions and supply your own:
-#
-#   GW_CORE_BRIDGE_DISABLE_SDK_MEMCPY — exclude memcpy only.
-#       Memmove stays routed through the SDK bridge (Doom/fastmem needs it).
-#
-#   GW_CORE_BRIDGE_DISABLE_SDK_MEMSET — exclude memset only.
-#
-#   GW_CORE_BRIDGE_DISABLE_SDK_MEMMOVE — exclude memmove too (requires your
-#       core to provide memmove).
-#
-#   GW_CORE_BRIDGE_DISABLE_SDK_MEMOPS — back-compat: exclude the full memops
-#       block (memcpy/memset/memmove + all __aeabi_mem* helpers).
-#
-#   GW_CORE_BRIDGE_DISABLE_SDK_MALLOC — exclude the malloc/calloc/free/
-#       realloc wrappers that forward to the firmware ABI heap. Use this when
-#       the core links its own allocator or needs a custom malloc/free path.
-#
-# To enable, add the define(s) to CORE_C_DEFS below, e.g.:
-#   CORE_C_DEFS += -DGW_CORE_BRIDGE_DISABLE_SDK_MEMCPY
-#   CORE_C_DEFS += -DGW_CORE_BRIDGE_DISABLE_SDK_MEMSET
-#   CORE_C_DEFS += -DGW_CORE_BRIDGE_DISABLE_SDK_MALLOC
+# Hot Minx CPU / video / audio .text in ITCM (see pokemini_core.ld).
+CORE_LDSCRIPT := pokemini_core.ld
+CORE_EXTRA_SEGMENTS := itcm:core_itcm
 
 #######################################
 # Kind-specific compile defs + packing
@@ -63,91 +68,49 @@ BUILD_DIR ?= build/$(PROJECT_KIND)
 ifeq ($(PROJECT_KIND),core)
 # Match release-firmware layout of retro_emulator_file_t: COVERFLOW fields
 # sit before cheat_* — CHEAT_CODES alone with COVERFLOW=0 misaligns pointers.
-# MAX_CHEAT_CODES mirrors Makefile.common's release default.
 CORE_C_DEFS := \
 -DPROJECT_KIND_CORE=1 \
 -DCOVERFLOW=1 \
--DCHEAT_CODES=1 \
--DMAX_CHEAT_CODES=13
+-DCHEAT_CODES=0 \
+-DTARGET_GNW
 
-PACKED_BIN  := $(CORE_NAME).bin
-PAD_LOGO    := src/assets/pad.png
-HEADER_LOGO := src/assets/header.png
+PACKED_BIN  := PokeMini.bin
+PAD_LOGO    := src/assets/pad.bmp
+HEADER_LOGO := src/assets/header.bmp
 
 else ifeq ($(PROJECT_KIND),homebrew)
-CORE_C_DEFS := \
--DPROJECT_KIND_HOMEBREW=1
-
-PACKED_BIN := ExampleHB.bin
-HB_NAME    := Example Homebrew
-# Compact coverflow tile (HW max is 186x100 — do not use full width by default).
-COVER_JPG    := $(BUILD_DIR)/cover.jpg
-COVER_WIDTH  ?= 128
-COVER_HEIGHT ?= 96
-
+$(error This project is a dynamic core only (PROJECT_KIND=core))
 else
-$(error PROJECT_KIND must be 'core' or 'homebrew' (got '$(PROJECT_KIND)'))
+$(error PROJECT_KIND must be 'core' (got '$(PROJECT_KIND)'))
 endif
 
 include $(GNW_CORE_SDK)/Makefile
 
-PACK_CORE     := $(GNW_CORE_SDK)/tools/pack_core.py
-PACK_HOMEBREW := $(GNW_CORE_SDK)/tools/pack_homebrew.py
-GEN_COVER     := scripts/gen_homebrew_cover.py
+PACK_CORE := $(GNW_CORE_SDK)/tools/pack_core.py
 
 #######################################
 # Packed header version
 #######################################
-# gnw_core_meta_t / gwhb_meta_t only store major.minor.patch (0..255).
-# CORE_VERSION is the full git describe string passed to the packers; they
-# extract the leading vX.Y.Z (NOTAG / missing tags → 0.0.0).
+# gnw_core_meta_t only stores major.minor.patch (0..255).
+# CORE_VERSION is the full git describe string passed to the packer; it
+# extracts the leading vX.Y.Z (NOTAG / missing tags → 0.0.0).
 # Override: make CORE_VERSION=v1.2.3
 CORE_VERSION ?= $(shell git describe --tags --dirty 2>/dev/null || echo NOTAG)
 
 #######################################
 # Pack
 #######################################
-.PHONY: pack cover
-
-ifeq ($(PROJECT_KIND),core)
+.PHONY: pack
 
 pack: $(TARGET_BIN) $(PAD_LOGO) $(HEADER_LOGO)
 	$(V)$(ECHO) [ PACK CORE ] $(PACKED_BIN) version=$(CORE_VERSION)
 	$(V)python3 $(PACK_CORE) \
 		--elf $(TARGET_ELF) --bin $(TARGET_BIN) \
-		--system-name "Example Core" --dirname example \
-		--extensions "bin" \
-		--core-name "Example" \
+		--system name="Pokémon Mini",dirname=mini,pad_logo=$(PAD_LOGO),header_logo=$(HEADER_LOGO),ext=min,parse=rom \
+		--logo-invert \
+		--core-name "PokeMini" \
 		--version "$(CORE_VERSION)" \
-		--cheat-ext ggcodes \
-		--pad-logo $(PAD_LOGO) \
-		--header-logo $(HEADER_LOGO) \
 		--out $(PACKED_BIN)
-
-else
-
-.PHONY: cover
-cover: $(COVER_JPG)
-
-# Must stay ≤ gui.c COVER_MAX_WIDTH x COVER_MAX_HEIGHT (186x100) and
-# COVER_SIZE (10 KiB) — oversized covers smash the HW JPEG scratch.
-$(COVER_JPG): $(GEN_COVER)
-	$(V)$(ECHO) [ COVER ] $(COVER_JPG) ($(COVER_WIDTH)x$(COVER_HEIGHT))
-	$(V)python3 $(GEN_COVER) \
-		--out $(COVER_JPG) \
-		--title "$(HB_NAME)" \
-		--width $(COVER_WIDTH) \
-		--height $(COVER_HEIGHT)
-
-pack: $(TARGET_BIN) $(COVER_JPG)
-	$(V)$(ECHO) [ PACK GWHB ] $(PACKED_BIN) version=$(CORE_VERSION)
-	$(V)python3 $(PACK_HOMEBREW) \
-		--elf $(TARGET_ELF) --bin $(TARGET_BIN) \
-		--name "$(HB_NAME)" --version "$(CORE_VERSION)" \
-		--cover $(COVER_JPG) \
-		--out $(PACKED_BIN)
-
-endif
 
 all: pack
 
@@ -171,9 +134,6 @@ print-CORE_VERSION:
 
 clean::
 	$(V)rm -f $(PACKED_BIN)
-ifeq ($(PROJECT_KIND),homebrew)
-	$(V)rm -f $(COVER_JPG)
-endif
 
 #######################################
 # Docker (same image as firmware repo)
@@ -193,8 +153,6 @@ DOCKER_RUN := docker run --rm $(DOCKER_TTY_FLAG) \
 	-w /opt/workdir \
 	$(DOCKER_IMAGE)
 
-# Compile inside the published builder image (uses the local copy).
-# Refresh with `make docker_pull` when you want a newer digest for the tag.
 docker:
 	$(V)$(ECHO) "[ DOCKER ]" $(DOCKER_IMAGE) "PROJECT_KIND=$(PROJECT_KIND)"
 	$(V)$(DOCKER_RUN) make --no-print-directory -j$$(nproc) PROJECT_KIND=$(PROJECT_KIND)
@@ -203,7 +161,6 @@ docker_pull:
 	$(V)$(ECHO) "[ PULL ]" $(DOCKER_IMAGE)
 	$(V)docker pull $(DOCKER_IMAGE)
 
-# Interactive shell with the same image / mount as `make docker`.
 docker_shell:
 	$(DOCKER_RUN) bash
 

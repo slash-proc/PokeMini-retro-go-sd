@@ -24,6 +24,7 @@
 #include "odroid_audio.h"
 #include "common.h"
 #include "rom_manager.h"
+#include "rg_storage.h"
 #include "main.h"
 
 /* --- Globals matching firmware / bridge surface -------------------------- */
@@ -313,20 +314,36 @@ void lcd_set_buffers(uint16_t *buf1, uint16_t *buf2)
 
 /* --- Audio ---------------------------------------------------------------- */
 
+static uint16_t audio_full_len;
+
+void audio_start_playing_full_length(uint16_t full_length);
+
 void audio_start_playing(uint16_t length)
 {
-    if (length == 0 || length > AUDIO_BUFFER_LENGTH)
-        length = AUDIO_BUFFER_LENGTH;
-    audio_half_len = length;
+    /* Match firmware: half-buffer length → full DMA length = half * 2. */
+    audio_start_playing_full_length((uint16_t)(length * 2));
+}
+
+void audio_start_playing_full_length(uint16_t full_length)
+{
+    uint16_t half;
+
+    if (full_length < 2)
+        full_length = 2;
+    /* DMA buffer is AUDIO_BUFFER_LENGTH * 2 samples max. */
+    if (full_length > (uint16_t)(AUDIO_BUFFER_LENGTH * 2))
+        full_length = (uint16_t)(AUDIO_BUFFER_LENGTH * 2);
+
+    audio_full_len = full_length;
+    half = full_length / 2;
+    if (half > AUDIO_BUFFER_LENGTH)
+        half = AUDIO_BUFFER_LENGTH;
+
+    audio_half_len = half;
     audio_active_half = 0;
     audio_started = 1;
     memset(audio_half_bufs, 0, sizeof(audio_half_bufs));
-    host_platform_audio_start(odroid_audio_sample_rate_get(), (int)length);
-}
-
-void audio_start_playing_full_length(uint16_t length)
-{
-    audio_start_playing(length);
+    host_platform_audio_start(odroid_audio_sample_rate_get(), (int)half);
 }
 
 void audio_stop_playing(void)
@@ -341,14 +358,20 @@ void audio_set_buffer_length(uint16_t length)
         audio_half_len = length;
 }
 
-uint16_t audio_get_buffer_length(void)
-{
-    return audio_half_len ? audio_half_len : (uint16_t)(16000 / 60);
-}
-
 uint16_t audio_get_buffer_full_length(void)
 {
-    return (uint16_t)(audio_get_buffer_length() * 2);
+    if (audio_full_len)
+        return audio_full_len;
+    return (uint16_t)((audio_half_len ? audio_half_len : (uint16_t)(16000 / 60)) * 2);
+}
+
+uint16_t audio_get_buffer_length(void)
+{
+    uint16_t full = audio_get_buffer_full_length();
+    /* Mirror firmware: HF half is full/2, TC half is (full+1)/2. */
+    if ((audio_active_half & 1) == 0)
+        return full / 2;
+    return (uint16_t)((full + 1) / 2);
 }
 
 uint16_t audio_get_buffer_size(void)
@@ -675,6 +698,8 @@ int odroid_savestate_menu(const char *title, const char *rom_path, bool show_pre
 
 /* --- System / settings / malloc ------------------------------------------- */
 
+static void host_sanitize_stem(char *dst, size_t dst_sz, const char *name);
+
 void odroid_system_init(int app_id, int sampleRate)
 {
     (void)app_id;
@@ -692,6 +717,35 @@ void odroid_system_emu_init(state_handler_t load_cb, state_handler_t save_cb,
     host_save_state_cb = save_cb;
     (void)screenshot_cb; (void)shutdown_cb;
     (void)sleep_post_wakeup_cb; (void)sram_save_cb; (void)cheat_update_cb;
+}
+
+char *odroid_system_get_path(emu_path_type_t type, const char *romPath)
+{
+    char stem[64];
+    char buf[512];
+    const char *name = romPath;
+
+    if ((!name || !name[0]) && ACTIVE_FILE)
+        name = ACTIVE_FILE->name;
+    if (!name || !name[0])
+        name = "host";
+
+    host_sanitize_stem(stem, sizeof(stem), name);
+    if (mkdir("host_saves", 0755) != 0 && errno != EEXIST)
+        perror("host: mkdir host_saves");
+
+    switch (type) {
+    case ODROID_PATH_SAVE_SRAM:
+        snprintf(buf, sizeof(buf), "host_saves/%s.eep", stem);
+        break;
+    case ODROID_PATH_SYSTEM_CONFIG:
+        snprintf(buf, sizeof(buf), "host_saves/%s.cfg", stem);
+        break;
+    default:
+        snprintf(buf, sizeof(buf), "host_saves/%s.path%d", stem, (int)type);
+        break;
+    }
+    return strdup(buf);
 }
 
 static void host_sanitize_stem(char *dst, size_t dst_sz, const char *name)
@@ -829,6 +883,29 @@ void dtc_init(void) {}
 void *dtc_malloc(size_t size) { return malloc(size); }
 void *dtc_calloc(size_t count, size_t size) { return calloc(count, size); }
 size_t dtc_get_free_size(void) { return 64 * 1024; }
+
+rg_stat_t rg_storage_stat(const char *path)
+{
+    rg_stat_t out;
+    struct stat st;
+
+    memset(&out, 0, sizeof(out));
+    if (!path || stat(path, &st) != 0)
+        return out;
+
+    out.exists = true;
+    out.is_file = S_ISREG(st.st_mode);
+    out.is_dir = S_ISDIR(st.st_mode);
+    out.size = (size_t)st.st_size;
+    out.mtime = st.st_mtime;
+    out.basename = path;
+    return out;
+}
+
+bool rg_storage_exists(const char *path)
+{
+    return rg_storage_stat(path).exists;
+}
 
 void wdog_refresh(void)
 {
