@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import struct
 import subprocess
 import sys
@@ -294,6 +295,16 @@ def image_size(path: Path) -> tuple[int, int] | None:
     return None
 
 
+def slug(name: str) -> str:
+    """A `project` identifier from a human-written CORE_NAME."""
+    out = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", out or ""):
+        raise SystemExit(
+            f"CORE_NAME {name!r} yields no usable project identifier"
+        )
+    return out
+
+
 def strip_comments(node):
     """Drop every "$comment" key, at any depth.
 
@@ -544,7 +555,13 @@ def build_manifest(*, bin_path: Path, artifacts: list[Path], wasm_path: Path | N
     check_not_template(header)
 
     declared = load_declared()
-    project = make_var("CORE_NAME")
+    # `project` is an identifier, not a display name: the schema demands
+    # ^[a-z0-9][a-z0-9-]*$, it becomes part of the bundle filename, and
+    # versions.json must agree with it. CORE_NAME is written for humans and
+    # may carry capitals (PokeMini) or punctuation, so derive a slug rather
+    # than publishing something a validator refuses. The display name lives
+    # in `title`, which comes from the binary.
+    project = slug(make_var("CORE_NAME"))
     title = header["title"] or project
 
     tools = []
