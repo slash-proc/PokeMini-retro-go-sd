@@ -1,0 +1,23 @@
+{
+  "$comment": "The hand-written half of this project's manifest. Everything else -- the systems, their folders, extensions and browse mode, the firmware ABI, sizes and hashes -- is derived from the packed core by scripts/make_manifest.py. Nothing derivable belongs here.",
+  "systems": {
+    "mini": {
+      "shortName": "Mini",
+      "compression": false,
+      "bios": [
+        {
+          "id": "bios",
+          "filename": "bios.min",
+          "required": false,
+          "sha1": "daad4113713ed776fbd47727762bca81ba74915f",
+          "label": {
+            "en": "Pokémon Mini BIOS"
+          },
+          "description": {
+            "en": "The original Pokémon Mini boot ROM, read from /bios/mini/bios.min. Optional: the core falls back to the bundled FreeBIOS when the file is absent, but the real boot ROM gives the authentic startup animation and the best compatibility."
+          }
+        }
+      ]
+    }
+  }
+}

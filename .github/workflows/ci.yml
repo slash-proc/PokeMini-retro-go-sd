@@ -27,6 +27,7 @@ jobs:
       packed_bin: ${{ steps.meta.outputs.packed_bin }}
       target_elf: ${{ steps.meta.outputs.target_elf }}
       target_map: ${{ steps.meta.outputs.target_map }}
+      ro_bin: ${{ steps.meta.outputs.ro_bin }}
 
     steps:
       - name: Checkout
@@ -44,10 +45,12 @@ jobs:
           PACKED_BIN="$(make --no-print-directory -f Makefile print-PACKED_BIN)"
           TARGET_ELF="$(make --no-print-directory -f Makefile print-TARGET_ELF)"
           TARGET_MAP="$(make --no-print-directory -f Makefile print-TARGET_MAP)"
+          RO_BIN="$(make --no-print-directory -f Makefile print-RO_BIN)"
           echo "project_kind=${PROJECT_KIND}" >> "${GITHUB_OUTPUT}"
           echo "packed_bin=${PACKED_BIN}" >> "${GITHUB_OUTPUT}"
           echo "target_elf=${TARGET_ELF}" >> "${GITHUB_OUTPUT}"
           echo "target_map=${TARGET_MAP}" >> "${GITHUB_OUTPUT}"
+          echo "ro_bin=${RO_BIN}" >> "${GITHUB_OUTPUT}"
           echo "PROJECT_KIND=${PROJECT_KIND}"
           echo "PACKED_BIN=${PACKED_BIN}"
           echo "TARGET_ELF=${TARGET_ELF}"
@@ -69,6 +72,7 @@ jobs:
             ${{ steps.meta.outputs.packed_bin }}
             ${{ steps.meta.outputs.target_elf }}
             ${{ steps.meta.outputs.target_map }}
+            ${{ steps.meta.outputs.ro_bin }}
           if-no-files-found: error
 
   release:
@@ -83,8 +87,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          # Full history + tags so `git describe --tags --dirty` works for CORE_VERSION.
-          fetch-depth: 0
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -98,14 +100,78 @@ jobs:
           PACKED_BIN="${{ needs.build.outputs.packed_bin }}"
           TARGET_ELF="${{ needs.build.outputs.target_elf }}"
           TARGET_MAP="${{ needs.build.outputs.target_map }}"
+          # Extra device files installed beside the packed binary. Read from
+          # the Makefile so a project with two or ten of them needs no change
+          # here, and staged out of dist/ where the build artifact landed --
+          # stage_release.py resolves a bare name against the repo root.
+          SIDECAR_ARGS=()
+          for sidecar in $(make --no-print-directory print-SIDECARS); do
+            SIDECAR_ARGS+=(--sidecar "dist/${sidecar}")
+          done
           # Artifact download preserves relative paths under dist/.
           python3 scripts/stage_release.py \
             --bin "dist/${PACKED_BIN}" \
+            "${SIDECAR_ARGS[@]}" \
             --elf "dist/${TARGET_ELF}" \
             --map "dist/${TARGET_MAP}" \
             --tag "${GITHUB_REF_NAME}" \
             --out release \
             --docker-image "${{ env.DOCKER_IMAGE }}"
+
+      # The dist manifest a web installer reads. Attached to the release, which
+      # is the source of truth; the Pages job mirrors it where a browser can
+      # reach it. See https://github.com/slash-proc/gwrg-dist-spec
+      # The ELF is published so a crash address can be resolved to a function.
+      # It is named by the manifest but is not part of the install set, so it
+      # has to be attached loose like any other file build_dist.py fetches.
+      - name: Stage the ELF for publication
+        run: |
+          set -euo pipefail
+          TARGET_ELF="${{ needs.build.outputs.target_elf }}"
+          cp "dist/${TARGET_ELF}" "release/$(basename "${TARGET_ELF}")"
+          echo "$(basename "${TARGET_ELF}")" >> release/release-files.txt
+
+      - name: Generate the dist manifest
+        run: |
+          set -euo pipefail
+          PACKED_BIN="${{ needs.build.outputs.packed_bin }}"
+          TARGET_ELF="${{ needs.build.outputs.target_elf }}"
+          # Every extra device file is an artifact in its own right, declared
+          # with its own hash. Same list the staging step used.
+          ARTIFACTS=()
+          for sidecar in $(make --no-print-directory print-SIDECARS); do
+            ARTIFACTS+=(--artifact "release/${sidecar}")
+          done
+          # Full-size box art, when this project keeps any. Optional and
+          # tolerated when absent, so the same block works in every project.
+          COVER_ARGS=()
+          COVER_FULL="$(make --no-print-directory print-COVER_FULL 2>/dev/null || true)"
+          if [ -n "${COVER_FULL}" ]; then
+            COVER_ARGS+=(--cover "release/$(basename "${COVER_FULL}")")
+          fi
+          python3 scripts/make_manifest.py \
+            --bin "release/${PACKED_BIN}" \
+            "${ARTIFACTS[@]}" \
+            --elf "release/$(basename "${TARGET_ELF}")" \
+            --tag "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --commit "${GITHUB_SHA}" \
+            "${COVER_ARGS[@]}" \
+            --out release/manifest.json
+          echo manifest.json >> release/release-files.txt
+
+      # The offline bundle. Attached to the release, not built by the Pages job,
+      # so what a user downloads offline is what the project actually published.
+      - name: Build the offline bundle
+        run: |
+          set -euo pipefail
+          BUNDLE="$(python3 scripts/make_bundle.py \
+            --manifest release/manifest.json --dir release --print-name)"
+          python3 scripts/make_bundle.py \
+            --manifest release/manifest.json \
+            --dir release \
+            --out "release/${BUNDLE}"
+          echo "${BUNDLE}" >> release/release-files.txt
 
       - name: Create GitHub Release
         env:
@@ -114,11 +180,114 @@ jobs:
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
           mapfile -t names < release/release-files.txt
-          files=()
-          for name in "${names[@]}"; do
-            files+=("release/${name}")
+
+          # GitHub compares asset names case-insensitively, so two files that
+          # differ only in case cannot both be attached. Catch that here rather
+          # than as a 422 halfway through the upload loop.
+          dupes="$(printf '%s\n' "${names[@]}" | tr '[:upper:]' '[:lower:]' | sort | uniq -d)"
+          if [ -n "${dupes}" ]; then
+            echo "asset names collide case-insensitively: ${dupes}" >&2
+            exit 1
+          fi
+
+          # Create the release empty, then upload assets one at a time. Doing
+          # both in one gh call has failed with a 404 from uploads.github.com
+          # partway through the asset list, leaving a release with only some of
+          # its files and no way to retry the rest.
+          # Deleting a tag does not delete its release -- GitHub turns the
+          # release into a draft. A re-cut tag therefore finds a stale draft
+          # here, and editing it would leave the release unpublished, which is
+          # invisible to anything reading the releases list.
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            if [ "$(gh release view "${TAG}" --json isDraft --jq .isDraft)" = "true" ]; then
+              echo "deleting stale draft release ${TAG}"
+              gh release delete "${TAG}" --yes
+              gh release create "${TAG}" \
+                --title "${TAG}" \
+                --notes-file release/RELEASE_NOTES.md
+            else
+              echo "release ${TAG} already published; updating it"
+              gh release edit "${TAG}" \
+                --title "${TAG}" \
+                --notes-file release/RELEASE_NOTES.md
+            fi
+          else
+            gh release create "${TAG}" \
+              --title "${TAG}" \
+              --notes-file release/RELEASE_NOTES.md
+          fi
+
+          # Drop whatever is already attached. A rerun then cannot inherit a
+          # stale asset from an earlier, differently-named build.
+          existing="$(gh release view "${TAG}" --json assets --jq '.assets[].name')"
+          for asset in ${existing}; do
+            echo "removing existing asset ${asset}"
+            gh release delete-asset "${TAG}" "${asset}" --yes
           done
-          gh release create "${TAG}" \
-            --title "${TAG}" \
-            --notes-file release/RELEASE_NOTES.md \
-            "${files[@]}"
+
+          for name in "${names[@]}"; do
+            path="release/${name}"
+            test -f "${path}" || { echo "missing asset: ${path}" >&2; exit 1; }
+            for attempt in 1 2 3; do
+              if gh release upload "${TAG}" "${path}" --clobber; then
+                echo "uploaded ${name}"
+                break
+              fi
+              if [ "${attempt}" = 3 ]; then
+                echo "giving up on ${name} after 3 attempts" >&2
+                exit 1
+              fi
+              echo "upload of ${name} failed; retrying in $((attempt * 5))s" >&2
+              sleep $((attempt * 5))
+            done
+          done
+
+          # Publish explicitly. A release that is still a draft is not in the
+          # releases list, so the Pages job would not find the tag it just built.
+          gh release edit "${TAG}" --draft=false --latest
+          echo "release state: $(gh release view "${TAG}" --json isDraft,isPrerelease --jq '"draft=\(.isDraft) prerelease=\(.isPrerelease)"')"
+
+          echo "assets now on the release:"
+          gh release view "${TAG}" --json assets \
+            --jq '.assets[] | "  \(.name) \(.size) bytes"' 
+
+  # Rebuilds the whole dist/ tree from the releases every time, so the site is a
+  # derived view rather than state edited in place. Runs after the release job so
+  # a published site can never advertise a build that did not ship.
+  pages:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build the dist tree from the releases
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/build_dist.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --out _site/dist \
+            --retain 5 \
+            --require-tag "${GITHUB_REF_NAME}"
+
+      # Pages must already be enabled on the repository (Settings -> Pages ->
+      # Source: GitHub Actions). `enablement: true` cannot do it: creating a
+      # Pages site needs repo-administration scope, which GITHUB_TOKEN lacks.
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

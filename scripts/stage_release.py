@@ -2,7 +2,8 @@
 """Stage Retro-Go SD release assets for the active project kind.
 
 Reads PROJECT_KIND and PACKED_BIN from the root Makefile, builds:
-  1. SD install zip:   <stem>-<tag>.zip       → cores|homebrews/<packed.bin>
+  1. SD install zip:   <stem>-<tag>.zip       → homebrews|cores/<packed.bin>
+                                               (+ any SIDECARS)
   2. Debug symbols zip: <stem>-<tag>-debug.zip → ELF, map, README
 
 Extracts release notes from CHANGELOG.md for the requested tag.
@@ -31,11 +32,20 @@ DEBUG_README = ROOT / "scripts" / "DEBUG_README.md"
 MAKE_VARS = (
     "PROJECT_KIND",
     "PACKED_BIN",
+    "SIDECARS",
+    "RO_BIN",
     "CORE_NAME",
     "DOCKER_IMAGE",
     "TARGET_ELF",
     "TARGET_MAP",
 )
+
+# Read separately, and tolerated when absent. MAKE_VARS is positional and
+# strict: a project whose Makefile lacks one of those targets fails outright,
+# which is right for a variable every project must define. A late optional
+# addition cannot use that path without breaking every Makefile that has not
+# been updated yet, and this file is vendored verbatim into every project.
+OPTIONAL_MAKE_VARS = ("COVER_FULL",)
 
 HEADING_RE = re.compile(
     r"^##\s*(?:\[(?P<bracket>[^\]]+)\]|(?P<plain>[^\s#]+))(?:\s*-\s*(?P<date>.+))?\s*$",
@@ -67,7 +77,10 @@ def read_make_vars() -> dict[str, str]:
     if proc.stderr:
         sys.stderr.write(proc.stderr)
 
-    values = [line for line in proc.stdout.splitlines() if line.strip()]
+    # Positional, and blank lines are kept: a variable a project does not set
+    # -- SIDECARS in most projects -- prints as an empty line, and dropping it
+    # would shift every value after it onto the wrong name.
+    values = proc.stdout.splitlines()
     # Defensive: if anything else leaked to stdout, keep the last N lines.
     if len(values) > len(MAKE_VARS):
         values = values[-len(MAKE_VARS) :]
@@ -75,7 +88,40 @@ def read_make_vars() -> dict[str, str]:
         raise SystemExit(
             f"expected {len(MAKE_VARS)} Makefile values, got {len(values)}:\n{proc.stdout}"
         )
-    return dict(zip(MAKE_VARS, values, strict=True))
+    cfg = dict(zip(MAKE_VARS, values, strict=True))
+
+    for var in OPTIONAL_MAKE_VARS:
+        proc = subprocess.run(
+            ["make", "-f", str(MAKEFILE), "--no-print-directory", f"print-{var}"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        # A Makefile without the target is not an error: the project simply
+        # does not have the thing.
+        if proc.returncode == 0:
+            lines = proc.stdout.splitlines()
+            cfg[var] = lines[-1] if lines else ""
+
+    return cfg
+
+
+def resolve_sidecars(cfg: dict[str, str], explicit: list[str] | None) -> list[str]:
+    """Extra device files installed beside the packed binary, in declared order.
+
+    SIDECARS is a space-separated list. RO_BIN is the older single-slot spelling
+    and still works: it was named for Zelda 3's .rodata dump, but gba puts an
+    execute-in-place blob through it, PICO-8 needs two files and a Quake port
+    needs one per level -- so the name was wrong and one slot was not enough.
+    """
+    if explicit:
+        return list(explicit)
+    names = (cfg.get("SIDECARS") or "").split()
+    if names:
+        return names
+    legacy = (cfg.get("RO_BIN") or "").strip()
+    return [legacy] if legacy else []
 
 
 def sd_subdir(project_kind: str) -> str:
@@ -124,6 +170,7 @@ def build_release_notes(
     docker_image: str,
     archive_name: str,
     debug_archive_name: str,
+    sidecar_names: list[str] | None = None,
 ) -> str:
     sdk_version = (ROOT / "SDK_VERSION").read_text(encoding="utf-8").strip()
     install_path = f"/{sd_dir}/{packed_name}"
@@ -138,28 +185,40 @@ def build_release_notes(
         f"- Project kind: `{project_kind}`",
         f"- Packed binary: `{packed_name}`",
         f"- SD install path: `{install_path}`",
-        f"- Release archive: `{archive_name}` (unzip onto the SD root)",
-        f"- Debug archive: `{debug_archive_name}` (ELF + linker map)",
-        f"- Built with: `{docker_image}`",
-        "",
-        "Crash PC/LR → source (needs `arm-none-eabi-addr2line`):",
-        "",
-        "```bash",
-        f"unzip {debug_archive_name}",
-        "arm-none-eabi-addr2line -e <name>_core.elf -f -C -a 0x<PC> 0x<LR>",
-        "```",
-        "",
-        "Or from a checkout of this repo: `python3 scripts/resolve_addr.py --elf …`",
-        "",
-        "```",
-        sdk_version,
-        "```",
     ]
+    # Named, not described: this used to say "Rodata sidecar" for every file,
+    # which was a lie the moment gba put a .xip through the same slot.
+    for name in sidecar_names or []:
+        lines.append(f"- Also installed: `/{sd_dir}/{name}` (included in the install zip)")
+    lines.extend(
+        [
+            f"- Release archive: `{archive_name}` (unzip onto the SD root)",
+            f"- Debug archive: `{debug_archive_name}` (ELF + linker map)",
+            f"- Built with: `{docker_image}`",
+            "",
+            "Crash PC/LR → source (needs `arm-none-eabi-addr2line`):",
+            "",
+            "```bash",
+            f"unzip {debug_archive_name}",
+            "arm-none-eabi-addr2line -e <name>_core.elf -f -C -a 0x<PC> 0x<LR>",
+            "```",
+            "",
+            "Or from a checkout of this repo: `python3 scripts/resolve_addr.py --elf …`",
+            "",
+            "```",
+            sdk_version,
+            "```",
+        ]
+    )
     if project_kind == "core":
         lines.append(f"- Test ROMs: `/roms/{core_name}/`")
     else:
         stem = Path(packed_name).stem
         lines.append(f"- Optional cover: `/covers/homebrew/{stem}.img`")
+        lines.append(
+            "- Game assets (`zelda3_assets.dat`) are not in this zip — extract from a "
+            "ROM (see README) and place under `/homebrews/`."
+        )
 
     return "\n".join(lines) + "\n"
 
@@ -181,10 +240,12 @@ def stage_release(
     docker_image: str | None,
     elf_path: Path | None,
     map_path: Path | None,
+    sidecar_paths: list[Path] | None,
 ) -> None:
     cfg = read_make_vars()
     project_kind = cfg["PROJECT_KIND"]
     packed_name = cfg["PACKED_BIN"]
+    sidecar_names = resolve_sidecars(cfg, [p.name for p in sidecar_paths or []])
     core_name = cfg["CORE_NAME"]
     resolved_docker = docker_image or cfg.get("DOCKER_IMAGE") or "sylverb/retro-go-sd-builder:v1.5"
 
@@ -205,6 +266,28 @@ def stage_release(
     if not DEBUG_README.is_file():
         raise SystemExit(f"debug readme not found: {DEBUG_README}")
 
+    explicit = {p.name: p for p in sidecar_paths or []}
+    resolved_sidecars: list[tuple[str, Path]] = []
+    for name in sidecar_names:
+        src = explicit.get(name) or (ROOT / name)
+        if not src.is_absolute():
+            src = ROOT / src
+        if not src.is_file():
+            raise SystemExit(f"sidecar {name!r} not found: {src}")
+        resolved_sidecars.append((name, src))
+
+    # Full-size box art, when the project keeps any. Not a device file -- it is
+    # never installed and never enters the SD zip -- but the manifest declares
+    # it, so the mirror has to be able to fetch it loose off the release.
+    cover = (cfg.get("COVER_FULL") or "").strip()
+    cover_src: Path | None = None
+    if cover:
+        cover_src = Path(cover)
+        if not cover_src.is_absolute():
+            cover_src = ROOT / cover_src
+        if not cover_src.is_file():
+            raise SystemExit(f"COVER_FULL not found: {cover_src}")
+
     changelog_body = extract_changelog_section(changelog_path, tag)
 
     sd_dir = sd_subdir(project_kind)
@@ -215,12 +298,36 @@ def stage_release(
     sd_bin = sd_root / packed_name
     shutil.copy2(bin_path, sd_bin)
 
+    # The loose device files, attached alongside the zips. The dist mirror
+    # fetches every file the manifest names straight off the release, so each
+    # one has to be there as a file and not only as a zip member. GitHub
+    # rewrites the spaces in an asset name; build_dist.py restores the declared
+    # name.
+    flat_files = [out_dir / packed_name]
+    shutil.copy2(bin_path, flat_files[0])
+
+    zip_members: list[tuple[Path, str]] = [(sd_bin, f"{sd_dir}/{packed_name}")]
+    for name, src in resolved_sidecars:
+        staged = sd_root / name
+        shutil.copy2(src, staged)
+        zip_members.append((staged, f"{sd_dir}/{name}"))
+        # Each sidecar is an artifact in its own right: the manifest declares it
+        # with its own hash, so the mirror must be able to fetch it loose too.
+        flat = out_dir / name
+        shutil.copy2(src, flat)
+        flat_files.append(flat)
+
+    cover_path: Path | None = None
+    if cover_src is not None:
+        cover_path = out_dir / cover_src.name
+        shutil.copy2(cover_src, cover_path)
+
     stem = Path(packed_name).stem
     tag_slug = slug(tag)
 
     archive_name = f"{stem}-{tag_slug}.zip"
     archive_path = out_dir / archive_name
-    write_zip(archive_path, [(sd_bin, f"{sd_dir}/{packed_name}")])
+    write_zip(archive_path, zip_members)
 
     debug_archive_name = f"{stem}-{tag_slug}-debug.zip"
     debug_archive_path = out_dir / debug_archive_name
@@ -245,12 +352,16 @@ def stage_release(
             docker_image=resolved_docker,
             archive_name=archive_name,
             debug_archive_name=debug_archive_name,
+            sidecar_names=sidecar_names,
         ),
         encoding="utf-8",
     )
 
-    # GitHub Release assets: install zip + debug zip only (no loose .bin).
-    release_files = [archive_path, debug_archive_path]
+    # GitHub Release assets: the loose files the manifest declares, plus the
+    # install and debug zips for people who install by hand.
+    release_files = [*flat_files, archive_path, debug_archive_path]
+    if cover_path is not None:
+        release_files.append(cover_path)
     files_path = out_dir / "release-files.txt"
     files_path.write_text(
         "\n".join(p.name for p in release_files) + "\n",
@@ -261,6 +372,14 @@ def stage_release(
     print(f"project_kind={project_kind}")
     print(f"packed_bin={packed_name}")
     print(f"sd_path=/{sd_dir}/{packed_name}")
+    if sidecar_names:
+        print(f"sidecars={' '.join(sidecar_names)}")
+        # Kept for callers written against the single-slot spelling.
+        if len(sidecar_names) == 1:
+            print(f"ro_bin={sidecar_names[0]}")
+            print(f"ro_path=/{sd_dir}/{sidecar_names[0]}")
+    if cover_path is not None:
+        print(f"cover={cover_path}")
     print(f"archive={archive_path}")
     print(f"debug_archive={debug_archive_path}")
     print(f"notes={notes_path}")
@@ -286,6 +405,21 @@ def main() -> None:
         dest="map_path",
         type=Path,
         help="linker map (default: TARGET_MAP from Makefile)",
+    )
+    parser.add_argument(
+        "--sidecar",
+        dest="sidecar_paths",
+        type=Path,
+        action="append",
+        help="extra device file to install beside the binary; repeatable "
+             "(default: SIDECARS from the Makefile)",
+    )
+    parser.add_argument(
+        "--ro",
+        dest="sidecar_paths",
+        type=Path,
+        action="append",
+        help=argparse.SUPPRESS,  # deprecated spelling of --sidecar
     )
     parser.add_argument("--tag", required=True, help="release tag (e.g. v1.0.0)")
     parser.add_argument(
@@ -323,6 +457,7 @@ def main() -> None:
         docker_image=args.docker_image,
         elf_path=args.elf_path,
         map_path=args.map_path,
+        sidecar_paths=args.sidecar_paths,
     )
 
 
