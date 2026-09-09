@@ -184,13 +184,18 @@ def index_entry(tag: str, release: dict, manifest: dict, bundle: str | None) -> 
     # Duplicated into the index so a version picker needs one fetch, not N+1.
     # The checker verifies these against the manifest they came from.
     # "You must supply something" -- whatever the something is. A converter
-    # input, or a BIOS an emulator cannot run without: every core ships
-    # tools: [], so counting only inputs would tell a picker that PC Engine CD
-    # needs nothing when it will not start without a System Card.
+    # input, or a BIOS a core cannot run without: most cores ship tools: [],
+    # so counting only inputs would tell a picker that PC Engine CD needs
+    # nothing when it will not start without a System Card.
+    #
+    # A BIOS the project publishes itself carries a url and is installed from
+    # the release like any other file, so it asks nothing of the user. Counting
+    # it would make every MSX install warn about the eleven ROMs it is about to
+    # install for you.
     needs_user_files = any(
         i["required"] for tool in manifest["tools"] for i in tool["inputs"]
     ) or any(
-        b.get("required") or b.get("requiredFor")
+        not b.get("url") and (b.get("required") or b.get("requiredFor"))
         for target in manifest["targets"]
         for system in target.get("systems", [])
         for b in system.get("bios", [])
