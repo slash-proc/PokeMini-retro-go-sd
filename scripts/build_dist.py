@@ -163,13 +163,16 @@ def manifest_problem(manifest: dict) -> str | None:
                 return f"artifact has fields the spec removed: {', '.join(sorted(extra))}"
     for tool in manifest.get("tools", []):
         for output in tool.get("outputs", []):
-            extra = set(output) - {"id", "filename", "maxBytes", "label", "description"}
+            extra = set(output) - {
+                "id", "filename", "extension", "maxBytes", "label", "description",
+            }
             if extra:
                 return f"output has fields the spec removed: {', '.join(sorted(extra))}"
         for inp in tool.get("inputs", []):
             extra = set(inp) - {
-                "id", "required", "repeatable", "label", "description",
-                "extensions", "maxBytes", "variants", "strict",
+                "id", "required", "allowMultiple", "runPerFile", "maxCount",
+                "label", "description", "extensions", "maxBytes", "variants",
+                "strict",
             }
             if extra:
                 return f"input has fields the spec removed: {', '.join(sorted(extra))}"

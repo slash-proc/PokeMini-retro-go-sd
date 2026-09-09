@@ -718,7 +718,11 @@ def main() -> None:
               f"(shipped {shipped}, into /bios/{s.get('biosDir', s['id'])}/)")
     for t in manifest["tools"]:
         print(f"  tool {t['id']} {t['binary']['file']} sha256={t['binary']['sha256'][:16]}…")
-        print(f"  produces {', '.join(o['filename'] for o in t['outputs'])}")
+        # A derived output has no filename here: the host names each produced
+        # file after the file it converted, so the most this can show is the
+        # extension every one of them will end in.
+        produces = [o.get("filename") or f"*{o['extension']}" for o in t["outputs"]]
+        print(f"  produces {', '.join(produces)}")
     for s in target.get("symbols", []):
         print(f"  symbols {s['filename']} {s['bytes']}B")
     if "originalSystem" in manifest:
