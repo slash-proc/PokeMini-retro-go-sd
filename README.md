@@ -16,7 +16,7 @@ They differ in packaging and SD layout:
 | | Dynamic core (`PROJECT_KIND=core`) | Homebrew (`PROJECT_KIND=homebrew`) |
 |--|-----------------------------------|-------------------------------------|
 | Packer | `sdk/tools/pack_core.py` (`CORE`) | `sdk/tools/pack_homebrew.py` (`GWHB`) |
-| SD path | `/cores/<name>.bin` | `/roms/homebrew/<name>.bin` |
+| SD path | `/cores/<name>.bin` | `/homebrews/<name>.bin` |
 | Launcher | New system tab (dirname + extensions) | Homebrew tab |
 | Assets | Pad/header 1bpp logos (`src/assets/`) | Optional JPEG cover (≤186×100, ≤10 KiB) |
 | `src/main.c` | Loads the ROM given by the launcher | No ROM — `ACTIVE_FILE` is this `.bin` |
@@ -72,7 +72,7 @@ dialog can show a semantic version.
 Produces:
 
 - **core:** `example.bin` → `/cores/example.bin`, test ROMs under `/roms/example/`
-- **homebrew:** `ExampleHB.bin` → `/roms/homebrew/ExampleHB.bin`
+- **homebrew:** `ExampleHB.bin` → `/homebrews/ExampleHB.bin`
   (optional override cover: `/covers/homebrew/ExampleHB.img`)
 
 The skeleton draws a framebuffer with the ROM / file name, beeps a square
@@ -136,9 +136,9 @@ you implement them in `src/main.c` — F1/F2 will then write/read those paths.
 3. Cover JPEG must decode ≤ **186×100** and be ≤ **10 KiB**. An on-disk
    `/covers/homebrew/<stem>.img` **overrides** the embedded cover.
 4. Large assets that do not fit in RAM_EMU stay as **sibling files** under
-   `/roms/homebrew/` and are opened via the ABI.
+   `/homebrews/` and are opened via the ABI.
 5. `make PROJECT_KIND=homebrew` → drop the `.bin` (and sidecars) under
-   `/roms/homebrew/`.
+   `/homebrews/`.
 
 Include order in `src/main.c`:
 
