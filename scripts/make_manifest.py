@@ -3,7 +3,7 @@
 
 Describes this release per the GWRG distribution spec
 (https://github.com/slash-proc/gwrg-dist-spec). One script serves every
-project -- homebrew and emulator core alike -- and it contains no facts about
+project -- homebrew and core alike -- and it contains no facts about
 any of them. It is meant to be vendored unchanged; a copy that had to be
 edited on the way in is a copy that drifts.
 
@@ -104,12 +104,11 @@ assert CORE_META_SIZE == 564, CORE_META_SIZE
 # thinking about whether a folder is one game or many.
 BROWSE = {0: "file", 1: "directory"}
 
-# The vocabulary boundary between the SDK and the spec. The SDK says "core"
-# because that is what it builds; the spec says "emulator" because that is the
-# word an end user knows. Neither side is wrong and neither is going to change,
-# so the translation lives here, in one place, on purpose. Do not "fix" either
-# side to match the other.
-KIND = {"homebrew": "homebrew", "core": "emulator"}
+# The SDK and the spec use the same two words, so this maps a kind to itself
+# and exists only to reject anything that is neither. It used to translate
+# "core" into "emulator": that boundary is gone, because a core that emulates
+# nothing -- Doom -- showed that "emulator" named a subset, not the set.
+KIND = {"homebrew": "homebrew", "core": "core"}
 
 # A core still wearing the template's clothes. Publishing one would put a
 # phantom "Example Core" tab in front of users, reading roms/example/.
@@ -551,7 +550,7 @@ def build_manifest(*, bin_path: Path, artifacts: list[Path], wasm_path: Path | N
         )
     kind = KIND[project_kind]
 
-    header = read_core(bin_path) if kind == "emulator" else read_gwhb(bin_path)
+    header = read_core(bin_path) if kind == "core" else read_gwhb(bin_path)
     check_not_template(header)
 
     declared = load_declared()
@@ -585,18 +584,18 @@ def build_manifest(*, bin_path: Path, artifacts: list[Path], wasm_path: Path | N
     if "runtime" in declared:
         if kind != "homebrew":
             raise SystemExit(
-                "gwrg.json: runtime belongs to a system for an emulator; "
+                "gwrg.json: runtime belongs to a system for a core; "
                 "declare it under systems[<id>].runtime"
             )
         target["runtime"] = declared["runtime"]
 
-    if kind == "emulator":
+    if kind == "core":
         target["systems"] = merge_systems(header["systems"], declared.get("systems", {}))
         attach_shipped_bios(target["systems"], bios_paths)
     elif bios_paths:
         raise SystemExit("--bios given but this is a homebrew, which has no systems[]")
     elif declared.get("systems"):
-        raise SystemExit("gwrg.json: systems[] belongs to an emulator core, not a homebrew")
+        raise SystemExit("gwrg.json: systems[] belongs to a core, not a homebrew")
 
     if tools:
         # Every output of every tool, installed. A project whose target wants
@@ -645,7 +644,7 @@ def build_manifest(*, bin_path: Path, artifacts: list[Path], wasm_path: Path | N
         if kind != "homebrew":
             raise SystemExit(
                 "gwrg.json: originalSystem describes where a homebrew came from; "
-                "an emulator declares systems[] instead"
+                "a core declares systems[] instead"
             )
         manifest["originalSystem"] = original_system
 
