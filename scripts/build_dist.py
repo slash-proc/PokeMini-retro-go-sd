@@ -164,7 +164,8 @@ def manifest_problem(manifest: dict) -> str | None:
     for tool in manifest.get("tools", []):
         for output in tool.get("outputs", []):
             extra = set(output) - {
-                "id", "filename", "extension", "maxBytes", "label", "description",
+                "id", "filename", "extension", "subdir", "maxBytes", "label",
+                "description",
             }
             if extra:
                 return f"output has fields the spec removed: {', '.join(sorted(extra))}"

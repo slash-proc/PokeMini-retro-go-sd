@@ -329,7 +329,8 @@ def load_declared() -> dict:
     except json.JSONDecodeError as exc:
         raise SystemExit(f"{DECLARED}: {exc}") from exc
     unknown = set(doc) - {
-        "$comment", "tool", "systems", "uses", "originalSystem", "storage", "runtime",
+        "$comment", "tool", "systems", "uses", "originalSystem", "storage",
+        "runtime", "dataDir",
     }
     if unknown:
         raise SystemExit(f"{DECLARED}: unknown key(s): {', '.join(sorted(unknown))}")
@@ -580,6 +581,17 @@ def build_manifest(*, bin_path: Path, artifacts: list[Path], wasm_path: Path | N
             for p, (n, h) in ((p, digest(p)) for p in [bin_path, *artifacts])
         ],
     }
+
+    # Where this homebrew reads its data from, when that is a folder of its own
+    # rather than beside the binary. The name is compiled into the binary, so
+    # nothing here can derive it -- see spec/03-manifest.md.
+    if "dataDir" in declared:
+        if kind != "homebrew":
+            raise SystemExit(
+                "gwrg.json: dataDir is homebrew-only; a core's output goes to "
+                "roms/<system id>/, which systems[] already decides"
+            )
+        target["dataDir"] = declared["dataDir"]
 
     if "runtime" in declared:
         if kind != "homebrew":
