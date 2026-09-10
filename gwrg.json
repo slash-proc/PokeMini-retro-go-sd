@@ -1,5 +1,4 @@
 {
-  "$comment": "The hand-written half of this project's manifest. Everything else -- the systems, their folders, extensions and browse mode, the firmware ABI, sizes and hashes -- is derived from the packed core by scripts/make_manifest.py. Nothing derivable belongs here.",
   "systems": {
     "mini": {
       "shortName": "Mini",
