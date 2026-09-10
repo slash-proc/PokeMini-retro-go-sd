@@ -13,8 +13,10 @@ Everything that can be derived is derived, from the built bytes:
   core      the "CORE" envelope and gnw_core_meta_t -> core name, ABI, systems[]
 
 What cannot be derived lives in gwrg.json at the repo root: the converter
-description for a project that ships one, and the per-system extras a core
-binary does not carry (shortName, compression, BIOS, extension grouping).
+description for a project that ships one, the per-system extras a core binary
+does not carry (shortName, compression, BIOS, extension grouping), and any
+artifact that has to be placed at a real address rather than in a filesystem
+("artifacts": {"<filename>": {"mapped": {"base": "0xDEC00000"}}}).
 Where the two overlap they are cross-checked, and a disagreement is fatal --
 the binary wins arguments, gwrg.json only adds what the binary cannot say.
 
@@ -330,11 +332,68 @@ def load_declared() -> dict:
         raise SystemExit(f"{DECLARED}: {exc}") from exc
     unknown = set(doc) - {
         "$comment", "tool", "systems", "uses", "originalSystem", "storage",
-        "runtime", "dataDir",
+        "runtime", "dataDir", "artifacts",
     }
     if unknown:
         raise SystemExit(f"{DECLARED}: unknown key(s): {', '.join(sorted(unknown))}")
     return strip_comments(doc)
+
+
+def u32(value, what: str) -> int:
+    """A 32-bit address, written however a human finds it readable.
+
+    Addresses are read in hex and stored as numbers, and the conversion belongs
+    here rather than in whoever writes gwrg.json: "0xDEC00000" is a value a
+    person can check against a linker script at a glance, and 3737124864 is
+    not. The manifest carries the integer, because the schema does.
+    """
+    if isinstance(value, bool):
+        raise SystemExit(f"gwrg.json: {what} must be a 32-bit address, not a boolean")
+    if isinstance(value, str):
+        try:
+            value = int(value, 0)
+        except ValueError:
+            raise SystemExit(f"gwrg.json: {what} is not a number: {value!r}") from None
+    if not isinstance(value, int):
+        raise SystemExit(f"gwrg.json: {what} must be a 32-bit address, got {value!r}")
+    if not 0 <= value <= 0xFFFFFFFF:
+        raise SystemExit(f"gwrg.json: {what} does not fit in 32 bits: {value}")
+    return value
+
+
+def declared_artifact(declared: dict, name: str) -> dict:
+    """The hand-written half of one artifact, keyed by the file's own name.
+
+    Artifacts arrive as --artifact paths, so their basename is the only handle
+    a declaration can key off. Everything derivable -- size, hash, url -- is
+    still read off the file; what lives here is the one thing the bytes cannot
+    say, which is that the device runs this file where it lies rather than
+    reading it out of a filesystem.
+    """
+    entry = declared.get("artifacts", {}).get(name)
+    if entry is None:
+        return {}
+    unknown = set(entry) - {"mapped"}
+    if unknown:
+        raise SystemExit(
+            f"gwrg.json: artifacts[{name!r}]: unknown key(s): {', '.join(sorted(unknown))}"
+        )
+    out = {}
+    if "mapped" in entry:
+        mapped = entry["mapped"]
+        if not isinstance(mapped, dict):
+            raise SystemExit(f"gwrg.json: artifacts[{name!r}].mapped must be an object")
+        unknown = set(mapped) - {"base"}
+        if unknown:
+            raise SystemExit(
+                f"gwrg.json: artifacts[{name!r}].mapped: unknown key(s): "
+                f"{', '.join(sorted(unknown))}"
+            )
+        out["mapped"] = (
+            {"base": u32(mapped["base"], f"artifacts[{name!r}].mapped.base")}
+            if "base" in mapped else {}
+        )
+    return out
 
 
 # --- the converter, when a project ships one ---------------------------------
@@ -577,10 +636,23 @@ def build_manifest(*, bin_path: Path, artifacts: list[Path], wasm_path: Path | N
         "kind": kind,
         "requiresAbi": header["abi"],
         "artifacts": [
-            {"filename": p.name, "bytes": n, "sha256": h, "url": p.name}
+            {"filename": p.name, "bytes": n, "sha256": h, "url": p.name,
+             **declared_artifact(declared, p.name)}
             for p, (n, h) in ((p, digest(p)) for p in [bin_path, *artifacts])
         ],
     }
+
+    # A declaration naming a file this build did not produce is a mistake worth
+    # stopping for: it means either a typo or an artifact that was meant to be
+    # passed and was not, and both publish a manifest missing the one field
+    # that says how the file has to be installed.
+    shipped = {p.name for p in [bin_path, *artifacts]}
+    orphans = sorted(set(declared.get("artifacts", {})) - shipped)
+    if orphans:
+        raise SystemExit(
+            "gwrg.json: artifacts[] names files this build does not ship: "
+            + ", ".join(orphans)
+        )
 
     # Where this homebrew reads its data from, when that is a folder of its own
     # rather than beside the binary. The name is compiled into the binary, so
