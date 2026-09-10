@@ -16,7 +16,7 @@ What cannot be derived lives in gwrg.json at the repo root: the converter
 description for a project that ships one, the per-system extras a core binary
 does not carry (shortName, compression, BIOS, extension grouping), and any
 artifact that has to be placed at a real address rather than in a filesystem
-("artifacts": {"<filename>": {"mapped": {"base": "0xDEC00000"}}}).
+("artifacts": {"<filename>": {"mapped": true, "relocBase": "0xDEC00000"}}).
 Where the two overlap they are cross-checked, and a disagreement is fatal --
 the binary wins arguments, gwrg.json only adds what the binary cannot say.
 
@@ -373,7 +373,7 @@ def declared_artifact(declared: dict, name: str) -> dict:
     entry = declared.get("artifacts", {}).get(name)
     if entry is None:
         return {}
-    unknown = set(entry) - {"mapped"}
+    unknown = set(entry) - {"mapped", "relocBase"}
     if unknown:
         raise SystemExit(
             f"gwrg.json: artifacts[{name!r}]: unknown key(s): {', '.join(sorted(unknown))}"
@@ -381,18 +381,16 @@ def declared_artifact(declared: dict, name: str) -> dict:
     out = {}
     if "mapped" in entry:
         mapped = entry["mapped"]
-        if not isinstance(mapped, dict):
-            raise SystemExit(f"gwrg.json: artifacts[{name!r}].mapped must be an object")
-        unknown = set(mapped) - {"base"}
-        if unknown:
+        if not isinstance(mapped, bool):
+            raise SystemExit(f"gwrg.json: artifacts[{name!r}].mapped must be true or false")
+        out["mapped"] = mapped
+    if "relocBase" in entry:
+        if out.get("mapped") is not True:
             raise SystemExit(
-                f"gwrg.json: artifacts[{name!r}].mapped: unknown key(s): "
-                f"{', '.join(sorted(unknown))}"
+                f"gwrg.json: artifacts[{name!r}].relocBase without mapped: the address "
+                "the blob was linked at means nothing unless the file is mapped"
             )
-        out["mapped"] = (
-            {"base": u32(mapped["base"], f"artifacts[{name!r}].mapped.base")}
-            if "base" in mapped else {}
-        )
+        out["relocBase"] = u32(entry["relocBase"], f"artifacts[{name!r}].relocBase")
     return out
 
 

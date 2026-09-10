@@ -158,7 +158,9 @@ def manifest_problem(manifest: dict) -> str | None:
     """
     for target in manifest.get("targets", []):
         for artifact in target.get("artifacts", []):
-            extra = set(artifact) - {"filename", "bytes", "sha256", "url", "mapped"}
+            extra = set(artifact) - {
+                "filename", "bytes", "sha256", "url", "mapped", "relocBase",
+            }
             if extra:
                 return f"artifact has fields the spec removed: {', '.join(sorted(extra))}"
     for tool in manifest.get("tools", []):
