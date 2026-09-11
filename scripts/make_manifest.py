@@ -755,15 +755,23 @@ def build_manifest(*, bin_path: Path, artifacts: list[Path], wasm_path: Path | N
     if storage is not None:
         manifest["storage"] = storage
 
-    # Where this homebrew's work came from. A native program under /homebrews/
-    # says nothing about its origin the way a ROM under roms/<system>/ does, so
-    # anything looking up box art would otherwise have to search blind by name.
+    # Where this project's work came from. A port says nothing about its origin
+    # the way a ROM under roms/<system>/ does, so anything looking up box art
+    # would otherwise have to search blind by name.
+    #
+    # It describes one work, not the software that runs it. A homebrew is always
+    # one work. A core usually is not -- an emulator runs whatever the user
+    # supplies -- but a core that ships a single game (Doom, from DOS) is a port
+    # like any homebrew, and its provenance is just as real. Declaring more than
+    # one system is the one case that is certainly wrong: that is an emulator,
+    # and it has no single origin to name.
     original_system = declared.get("originalSystem")
     if original_system is not None:
-        if kind != "homebrew":
+        if kind == "core" and len(target.get("systems", [])) > 1:
             raise SystemExit(
-                "gwrg.json: originalSystem describes where a homebrew came from; "
-                "a core declares systems[] instead"
+                "gwrg.json: originalSystem names where one work came from, but "
+                f"this core declares {len(target['systems'])} systems. A core "
+                "that emulates several systems is not a port of any one of them"
             )
         manifest["originalSystem"] = original_system
 
