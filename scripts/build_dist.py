@@ -142,6 +142,11 @@ def declared_files(manifest: dict) -> list[str]:
             for b in system.get("bios", []):
                 if b.get("url"):
                     names.append(b["url"])
+            # A game this project ships is published exactly like a BIOS it
+            # ships: named by the manifest, fetched off the release, mirrored.
+            for g in system.get("games", []):
+                if g.get("url"):
+                    names.append(g["url"])
     if manifest.get("cover"):
         names.append(manifest["cover"]["url"])
     for tool in manifest["tools"]:

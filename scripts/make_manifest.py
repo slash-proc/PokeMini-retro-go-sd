@@ -501,6 +501,34 @@ def attach_shipped_bios(systems: list[dict], bios_paths: list[Path]) -> None:
         )
 
 
+def attach_shipped_games(systems: list[dict], game_paths: list[Path]) -> None:
+    """Fill in url/bytes/sha256 for games this project ships.
+
+    Unlike a BIOS, a game entry is only ever a published file: "a game the user
+    already has" is just a game, and needs no manifest entry. So every declared
+    game must be matched by a --game file, and every --game file by a
+    declaration -- neither half means anything alone.
+    """
+    remaining = {p.name: p for p in game_paths}
+    for system in systems:
+        for entry in system.get("games", []):
+            path = remaining.pop(entry["filename"], None)
+            if path is None:
+                raise SystemExit(
+                    f"system {system['id']!r} declares game "
+                    f"{entry['filename']!r} but no --game supplied it"
+                )
+            size, sha256 = digest(path)
+            entry["url"] = entry["filename"]
+            entry["bytes"] = size
+            entry["sha256"] = sha256
+    if remaining:
+        raise SystemExit(
+            "--game names file(s) no system declares: "
+            + ", ".join(sorted(remaining))
+        )
+
+
 def merge_systems(derived: list[dict], declared: dict) -> list[dict]:
     """Derived systems plus the parts the binary cannot state.
 
@@ -519,8 +547,8 @@ def merge_systems(derived: list[dict], declared: dict) -> list[dict]:
                 f"shortName and compression."
             )
         unknown = set(extra) - {
-            "shortName", "compression", "extensions", "bios", "runtime", "biosDir",
-            "$comment",
+            "shortName", "compression", "extensions", "bios", "games", "runtime",
+            "biosDir", "$comment",
         }
         if unknown:
             raise SystemExit(
@@ -572,6 +600,8 @@ def merge_systems(derived: list[dict], declared: dict) -> list[dict]:
             merged[key] = extra[key]
         if "bios" in extra:
             merged["bios"] = extra["bios"]
+        if "games" in extra:
+            merged["games"] = extra["games"]
 
         # Field order for readability: identity, names, media, then extras.
         out.append({
@@ -582,7 +612,10 @@ def merge_systems(derived: list[dict], declared: dict) -> list[dict]:
             "browse": merged["browse"],
             "compression": merged["compression"],
             **({"cheatExt": merged["cheatExt"]} if "cheatExt" in merged else {}),
+            **({"biosDir": merged["biosDir"]} if "biosDir" in merged else {}),
+            **({"runtime": merged["runtime"]} if "runtime" in merged else {}),
             **({"bios": merged["bios"]} if "bios" in merged else {}),
+            **({"games": merged["games"]} if "games" in merged else {}),
         })
 
     strays = set(declared) - {s["id"] for s in derived}
@@ -599,7 +632,8 @@ def merge_systems(derived: list[dict], declared: dict) -> list[dict]:
 
 def build_manifest(*, bin_path: Path, artifacts: list[Path], wasm_path: Path | None,
                    elf_path: Path | None, cover_path: Path | None,
-                   bios_paths: list[Path], tag: str, repo: str, commit: str) -> dict:
+                   bios_paths: list[Path], game_paths: list[Path],
+                   tag: str, repo: str, commit: str) -> dict:
     project_kind = make_var("PROJECT_KIND")
     if project_kind not in KIND:
         raise SystemExit(
@@ -674,8 +708,11 @@ def build_manifest(*, bin_path: Path, artifacts: list[Path], wasm_path: Path | N
     if kind == "core":
         target["systems"] = merge_systems(header["systems"], declared.get("systems", {}))
         attach_shipped_bios(target["systems"], bios_paths)
+        attach_shipped_games(target["systems"], game_paths)
     elif bios_paths:
         raise SystemExit("--bios given but this is a homebrew, which has no systems[]")
+    elif game_paths:
+        raise SystemExit("--game given but this is a homebrew, which has no systems[]")
     elif declared.get("systems"):
         raise SystemExit("gwrg.json: systems[] belongs to a core, not a homebrew")
 
@@ -764,6 +801,9 @@ def main() -> None:
     ap.add_argument("--bios", dest="bios_paths", type=Path, action="append", default=[],
                     help="a BIOS file this project ships rather than asking the "
                          "user for; repeatable. Installs to /bios/<biosDir or id>/")
+    ap.add_argument("--game", dest="game_paths", type=Path, action="append", default=[],
+                    help="a game this project ships, freely redistributable; "
+                         "repeatable. Installs to roms/<system id>/")
     ap.add_argument("--tag", required=True)
     ap.add_argument("--repo", required=True, help="owner/name")
     ap.add_argument("--commit", required=True)
@@ -773,6 +813,7 @@ def main() -> None:
     for label, path in [("packed binary", args.bin_path), ("extractor module", args.wasm_path),
                         ("ELF", args.elf_path), ("cover", args.cover_path),
                         *[("bios", b) for b in args.bios_paths],
+                        *[("game", g) for g in args.game_paths],
                         *[("artifact", a) for a in args.artifacts]]:
         if path is not None and not path.is_file():
             raise SystemExit(f"{label} not found: {path}")
@@ -780,7 +821,7 @@ def main() -> None:
     manifest = build_manifest(
         bin_path=args.bin_path, artifacts=args.artifacts, wasm_path=args.wasm_path,
         elf_path=args.elf_path, cover_path=args.cover_path,
-        bios_paths=args.bios_paths, tag=args.tag, repo=args.repo, commit=args.commit,
+        bios_paths=args.bios_paths, game_paths=args.game_paths, tag=args.tag, repo=args.repo, commit=args.commit,
     )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -798,6 +839,8 @@ def main() -> None:
         print(f"  system {s['id']}: {s['longName']!r} {s['extensions']} "
               f"browse={s['browse']} bios={len(s.get('bios', []))} "
               f"(shipped {shipped}, into /bios/{s.get('biosDir', s['id'])}/)")
+        for g in s.get("games", []):
+            print(f"  game {g['filename']} {g['bytes']}B -> roms/{s['id']}/")
     for t in manifest["tools"]:
         print(f"  tool {t['id']} {t['binary']['file']} sha256={t['binary']['sha256'][:16]}…")
         # A derived output has no filename here: the host names each produced
