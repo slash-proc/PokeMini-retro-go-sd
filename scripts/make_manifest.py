@@ -331,7 +331,8 @@ def load_declared() -> dict:
     except json.JSONDecodeError as exc:
         raise SystemExit(f"{DECLARED}: {exc}") from exc
     unknown = set(doc) - {
-        "$comment", "tool", "systems", "uses", "originalSystem", "storage",
+        "$comment", "tool", "systems", "uses", "originalSystem", "originalName",
+        "storage",
         "runtime", "dataDir", "artifacts",
     }
     if unknown:
@@ -765,15 +766,22 @@ def build_manifest(*, bin_path: Path, artifacts: list[Path], wasm_path: Path | N
     # like any homebrew, and its provenance is just as real. Declaring more than
     # one system is the one case that is certainly wrong: that is an emulator,
     # and it has no single origin to name.
-    original_system = declared.get("originalSystem")
-    if original_system is not None:
+    # originalName is the title the work was published under, which is often not
+    # this project's title: the title is the port's name, and a port is
+    # frequently named after its engine. "OpenLara" is not in any box-art
+    # library; "Tomb Raider" is. Omit it when the title is already the work's
+    # own name, which is the common case.
+    for field in ("originalSystem", "originalName"):
+        value = declared.get(field)
+        if value is None:
+            continue
         if kind == "core" and len(target.get("systems", [])) > 1:
             raise SystemExit(
-                "gwrg.json: originalSystem names where one work came from, but "
-                f"this core declares {len(target['systems'])} systems. A core "
-                "that emulates several systems is not a port of any one of them"
+                f"gwrg.json: {field} describes one work, but this core declares "
+                f"{len(target['systems'])} systems. A core that emulates several "
+                "systems is not a port of any one of them"
             )
-        manifest["originalSystem"] = original_system
+        manifest[field] = value
 
     # Full-size box art. The GWHB header can carry a cover too, but that one is
     # bounded by what the device decodes and caches (186x100, 10 KiB); this is
@@ -860,6 +868,8 @@ def main() -> None:
         print(f"  symbols {s['filename']} {s['bytes']}B")
     if "originalSystem" in manifest:
         print(f"  originalSystem={manifest['originalSystem']}")
+    if "originalName" in manifest:
+        print(f"  originalName={manifest['originalName']!r}")
     if "cover" in manifest:
         c = manifest["cover"]
         size = f" {c['width']}x{c['height']}" if "width" in c else ""
