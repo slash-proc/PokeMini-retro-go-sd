@@ -174,3 +174,11 @@ docker_shell:
 # Host SDL (Linux / macOS)
 #######################################
 include host/Makefile.host
+
+# --- dist ---------------------------------------------------------------------
+# Full-size box art, published beside the release; empty unless this project
+# ships any. Read by the shared CI and tolerated when absent.
+COVER_FULL ?=
+.PHONY: print-COVER_FULL
+print-COVER_FULL:
+	@echo $(COVER_FULL)

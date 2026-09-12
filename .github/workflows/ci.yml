@@ -9,6 +9,7 @@ on:
   pull_request:
     branches:
       - main
+  workflow_dispatch:
 
 # Cancel superseded runs on the same ref (keeps PR feedback fast).
 concurrency:
@@ -27,7 +28,7 @@ jobs:
       packed_bin: ${{ steps.meta.outputs.packed_bin }}
       target_elf: ${{ steps.meta.outputs.target_elf }}
       target_map: ${{ steps.meta.outputs.target_map }}
-      ro_bin: ${{ steps.meta.outputs.ro_bin }}
+      sidecars: ${{ steps.meta.outputs.sidecars }}
 
     steps:
       - name: Checkout
@@ -45,12 +46,21 @@ jobs:
           PACKED_BIN="$(make --no-print-directory -f Makefile print-PACKED_BIN)"
           TARGET_ELF="$(make --no-print-directory -f Makefile print-TARGET_ELF)"
           TARGET_MAP="$(make --no-print-directory -f Makefile print-TARGET_MAP)"
-          RO_BIN="$(make --no-print-directory -f Makefile print-RO_BIN)"
+          # Every extra device file, one per line: upload-artifact's `path` is a
+          # newline-separated list, and a project may have more than one. The
+          # older ro_bin output held a single slot, which is the limitation
+          # SIDECARS exists to remove.
+          SIDECARS="$(make --no-print-directory -f Makefile print-SIDECARS)"
+          {
+            echo "sidecars<<SIDECARS_EOF"
+            for s in ${SIDECARS}; do echo "${s}"; done
+            echo "SIDECARS_EOF"
+          } >> "${GITHUB_OUTPUT}"
+          echo "SIDECARS=${SIDECARS}"
           echo "project_kind=${PROJECT_KIND}" >> "${GITHUB_OUTPUT}"
           echo "packed_bin=${PACKED_BIN}" >> "${GITHUB_OUTPUT}"
           echo "target_elf=${TARGET_ELF}" >> "${GITHUB_OUTPUT}"
           echo "target_map=${TARGET_MAP}" >> "${GITHUB_OUTPUT}"
-          echo "ro_bin=${RO_BIN}" >> "${GITHUB_OUTPUT}"
           echo "PROJECT_KIND=${PROJECT_KIND}"
           echo "PACKED_BIN=${PACKED_BIN}"
           echo "TARGET_ELF=${TARGET_ELF}"
@@ -72,7 +82,7 @@ jobs:
             ${{ steps.meta.outputs.packed_bin }}
             ${{ steps.meta.outputs.target_elf }}
             ${{ steps.meta.outputs.target_map }}
-            ${{ steps.meta.outputs.ro_bin }}
+            ${{ steps.meta.outputs.sidecars }}
           if-no-files-found: error
 
   release:
@@ -87,6 +97,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          # Full history + tags so `git describe --tags --dirty` works for CORE_VERSION.
+          fetch-depth: 0
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -121,21 +133,17 @@ jobs:
       # The dist manifest a web installer reads. Attached to the release, which
       # is the source of truth; the Pages job mirrors it where a browser can
       # reach it. See https://github.com/slash-proc/gwrg-dist-spec
-      # The ELF is published so a crash address can be resolved to a function.
-      # It is named by the manifest but is not part of the install set, so it
-      # has to be attached loose like any other file build_dist.py fetches.
-      - name: Stage the ELF for publication
-        run: |
-          set -euo pipefail
-          TARGET_ELF="${{ needs.build.outputs.target_elf }}"
-          cp "dist/${TARGET_ELF}" "release/$(basename "${TARGET_ELF}")"
-          echo "$(basename "${TARGET_ELF}")" >> release/release-files.txt
-
       - name: Generate the dist manifest
         run: |
           set -euo pipefail
           PACKED_BIN="${{ needs.build.outputs.packed_bin }}"
           TARGET_ELF="${{ needs.build.outputs.target_elf }}"
+          # The ELF, for symbols[]. Published so a crash address can be
+          # resolved to a function, and carried in the offline bundle -- but
+          # never installed: it is not in the install set and never reaches
+          # the card.
+          cp "dist/${TARGET_ELF}" release/
+          ELF_NAME="$(basename "${TARGET_ELF}")"
           # Every extra device file is an artifact in its own right, declared
           # with its own hash. Same list the staging step used.
           ARTIFACTS=()
@@ -152,13 +160,16 @@ jobs:
           python3 scripts/make_manifest.py \
             --bin "release/${PACKED_BIN}" \
             "${ARTIFACTS[@]}" \
-            --elf "release/$(basename "${TARGET_ELF}")" \
+            --elf "release/${ELF_NAME}" \
             --tag "${GITHUB_REF_NAME}" \
             --repo "${GITHUB_REPOSITORY}" \
             --commit "${GITHUB_SHA}" \
             "${COVER_ARGS[@]}" \
             --out release/manifest.json
+          # Every file the manifest names is fetched off the release by
+          # build_dist.py, symbols included.
           echo manifest.json >> release/release-files.txt
+          echo "${ELF_NAME}" >> release/release-files.txt
 
       # The offline bundle. Attached to the release, not built by the Pages job,
       # so what a user downloads offline is what the project actually published.
