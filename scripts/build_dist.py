@@ -200,8 +200,18 @@ def index_entry(tag: str, release: dict, manifest: dict, bundle: str | None) -> 
     # the release like any other file, so it asks nothing of the user. Counting
     # it would make every MSX install warn about the eleven ROMs it is about to
     # install for you.
+    # A tool the target does not require cannot make the user fetch anything:
+    # uses[].required is defined as "false if the install works without it",
+    # which is exactly a project that ships a game and offers the converter for
+    # the user's own. inputs[].required is a different question -- can the tool
+    # run at all -- and answering this one with it conflated the two.
+    tools_by_id = {t["id"]: t for t in manifest["tools"]}
     needs_user_files = any(
-        i["required"] for tool in manifest["tools"] for i in tool["inputs"]
+        i["required"]
+        for target in manifest["targets"]
+        for use in target.get("uses", [])
+        if use.get("required")
+        for i in tools_by_id.get(use["tool"], {}).get("inputs", [])
     ) or any(
         not b.get("url") and (b.get("required") or b.get("requiredFor"))
         for target in manifest["targets"]
