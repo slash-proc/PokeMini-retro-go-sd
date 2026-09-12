@@ -45,7 +45,11 @@ MAKE_VARS = (
 # which is right for a variable every project must define. A late optional
 # addition cannot use that path without breaking every Makefile that has not
 # been updated yet, and this file is vendored verbatim into every project.
-OPTIONAL_MAKE_VARS = ("COVER_FULL",)
+# REDIST_DOCS: files a licence obliges this project to pass on with the binary,
+# space separated. They are not device files -- they go in the install zip beside
+# the SD folder and are attached to the release, so whoever redistributes the
+# thing has the terms in hand.
+OPTIONAL_MAKE_VARS = ("COVER_FULL", "REDIST_DOCS")
 
 HEADING_RE = re.compile(
     r"^##\s*(?:\[(?P<bracket>[^\]]+)\]|(?P<plain>[^\s#]+))(?:\s*-\s*(?P<date>.+))?\s*$",
@@ -316,6 +320,19 @@ def stage_release(
         flat = out_dir / name
         shutil.copy2(src, flat)
         flat_files.append(flat)
+
+    # Licence and attribution documents that must travel with the binary. Named
+    # after the binary so two projects' files cannot collide on a card, and put
+    # at the zip root rather than in the SD folder: the device never reads them.
+    for doc in (cfg.get("REDIST_DOCS") or "").split():
+        doc_src = (ROOT / doc).resolve()
+        if not doc_src.is_file():
+            raise SystemExit(f"REDIST_DOCS not found: {doc_src}")
+        arcname = f"{Path(packed_name).stem}-{doc_src.name}"
+        staged_doc = out_dir / arcname
+        shutil.copy2(doc_src, staged_doc)
+        zip_members.append((staged_doc, arcname))
+        flat_files.append(staged_doc)
 
     cover_path: Path | None = None
     if cover_src is not None:

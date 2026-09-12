@@ -40,6 +40,11 @@ def declared_files(manifest: dict) -> list[str]:
             for b in system.get("bios", []):
                 if b.get("url"):
                     names.append(b["url"])
+            # A game the project ships is published like a BIOS it ships, and
+            # a bundle without it is a core with nothing to run.
+            for g in system.get("games", []):
+                if g.get("url"):
+                    names.append(g["url"])
     if manifest.get("cover"):
         names.append(manifest["cover"]["url"])
     for tool in manifest["tools"]:
@@ -58,6 +63,9 @@ def expected_sizes(manifest: dict) -> dict[str, tuple[int, str]]:
             for b in system.get("bios", []):
                 if b.get("url"):
                     sizes[b["url"]] = (b["bytes"], b["sha256"])
+            for g in system.get("games", []):
+                if g.get("url"):
+                    sizes[g["url"]] = (g["bytes"], g["sha256"])
     if manifest.get("cover"):
         cover = manifest["cover"]
         sizes[cover["url"]] = (cover["bytes"], cover["sha256"])
