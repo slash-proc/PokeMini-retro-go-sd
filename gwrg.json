@@ -3,6 +3,10 @@
     "mini": {
       "shortName": "Mini",
       "compression": false,
+      "runtime": {
+        "savestate": { "supported": true },
+        "save": { "supported": true, "bytes": 8192 }
+      },
       "bios": [
         {
           "id": "bios",
